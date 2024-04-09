@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <link href="https://fonts.googleapis.com/css2?family=Roboto+Mono&display=swap" rel="stylesheet" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#000000" />
+  <meta name="description" content="Web site created using create-react-app" />
+  <!--
+      manifest.json provides metadata used when your web app is installed on a
+      user's mobile device or desktop. See https://developers.google.com/web/fundamentals/web-app-manifest/
+    -->
+  <link rel="manifest" href="%PUBLIC_URL%/manifest.json" />
+  <!--
+      Notice the use of %PUBLIC_URL% in the tags above.
+      It will be replaced with the URL of the `public` folder during the build.
+      Only files inside the `public` folder can be referenced from the HTML.
+
+      Unlike "/favicon.ico" or "favicon.ico", "%PUBLIC_URL%/favicon.ico" will
+      work correctly both with client-side routing and a non-root public URL.
+      Learn how to configure a non-root public URL by running `npm run build`.
+    -->
+  <title>Voice Based Navigation</title>
+  <script src="https://cdn.jsdelivr.net/npm/aws-sdk@2.1144.0/dist/aws-sdk.min.js"></script>
+</head>
+
+<body>
+  <noscript>You need to enable JavaScript to run this app.</noscript>
+  <div id="root"></div>
+  <!--
+      This HTML file is a template.
+      If you open it directly in the browser, you will see an empty page.
+
+      You can add webfonts, meta tags, or analytics to this file.
+      The build step will place the bundled scripts into the <body> tag.
+
+      To begin the development, run `npm start` or `yarn start`.
+      To create a production bundle, use `npm run build` or `yarn build`.
+    -->
+  <div class="audio-control">
+    <p id="audio-control" class="white-circle" onclick="audioclick()">
+      <img src="mic_1.png">
+      <canvas class="visualizer"></canvas>
+    </p>
+    <p><span id="message" style="display: none;"></span></p>
+    
+</body>
+
+<script src="aws-lex-audio.js"></script>
+<script src="renderer.js" type="text/javascript"></script>
+
+<script type="text/javascript">
+  var waveform = window.Waveform();
+  var message = document.getElementById('message');
+  var config, conversation;
+  message.textContent = 'Click On The Mic To Talk';
+
+  document.onkeydown = function (e) {
+    if (e.keyCode == 32) {
+        audioclick();
+    }
+};
+
+
+  window.onload = function () {
+    console.log("window onload");
+    //Below is generic code to programatically scan page, then create intents and bot
+    //createBotAndIntents();
+  }
+
+  const createBotAndIntents = async () => {
+    // Scan all buttons on page
+    const buttons = document.querySelectorAll('button');
+
+    const intentsPromises = [];
+
+    AWS.config.update({
+        region: 'us-east-1',
+        accessKeyId: '<secret-1>',
+        secretAccessKey: '<secret-2>',
+    });
+
+    buttons.forEach((button) => {
+        const intentName = button.id + 'Intent';
+        const btnName = button.innerHTML;
+        const createIntentPromise = createIntent(intentName, btnName);
+        intentsPromises.push(createIntentPromise);
+    });
+
+    try {
+        // Wait for all intents to be created
+        const intentsResults = await Promise.all(intentsPromises);
+
+        // Extract intent names from the results
+        const intents = intentsResults.map((result, index) => ({
+            intentName: buttons[index].id + 'Intent',
+            intentVersion: '$LATEST',
+        }));
+
+        // Check if the bot already exists
+        const botParams = {
+            name: '<bot-name>', // Replace with your bot name
+            versionOrAlias: '$LATEST'
+        };
+
+        let botExists = false;
+
+        try {
+            const lexModelBuildingService = new AWS.LexModelBuildingService();
+            await lexModelBuildingService.getBot(botParams).promise();
+            botExists = true;
+            console.log('Bot already exists.');
+        } catch (error) {
+            if (error.code !== 'NotFoundException') {
+                console.error('Error checking if bot exists:', error);
+                throw error;
+            }
+            console.log('Bot does not exist. Creating new bot...');
+        }
+
+        if (botExists) {
+            // If bot exists, add intents to it
+            const existingIntents = await getIntentsForBot(botParams.name);
+            // const existingIntentsDetails = await getIntentsDetails(existingIntents);
+            const intentsToAdd = intents.filter(intent => !existingIntents.includes(intent.intentName)) .map(({intentName}) => intentName);;
+            // const newIntentsDetails = await getIntentsDetails(intentsToAdd);
+            // console.log(newIntentsDetails);
+            // const totalIntents=existingIntentsDetails.concat(newIntentsDetails);
+            if (intentsToAdd.length > 0) {
+                await addIntentsToBot(botParams.name, intents);
+            }
+        } else {
+            // If bot doesn't exist, create a new one
+            await createBot('<bot-name>', intents);
+        }
+    } catch (error) {
+        console.error('Error creating intents and bot:', error);
+    }
+};
+
+// const getIntentsDetails = async (intentNames) => {
+//     try {
+//         const lexModelBuildingService = new AWS.LexModelBuildingService();
+//         const intentsDetails = [];
+
+//         for (const intentName of intentNames) {
+//             const getIntentParams = {
+//                 name: intentName,
+//                 version: '$LATEST'
+//             };
+//             const intentDetails = await lexModelBuildingService.getIntent(getIntentParams).promise();
+//             console.log(intentDetails);
+//             intentsDetails.push(intentDetails);
+//         }
+
+//         return intentsDetails;
+//     } catch (error) {
+//         console.error('Error getting intents details:', error);
+//         throw error;
+//     }
+// };
+
+const getIntentsForBot = async (botName) => {
+    try {
+        const lexModelBuildingService = new AWS.LexModelBuildingService();
+        const bot = await lexModelBuildingService.getBot({ name: botName, versionOrAlias: '$LATEST' }).promise();
+        return bot.intents.map(intent => intent.intentName);
+    } catch (error) {
+        console.error(`Error getting intents for bot ${botName}:`, error);
+        throw error;
+    }
+};
+
+const addIntentsToBot = async (botName, intents) => {
+    try {
+        const lexModelBuildingService = new AWS.LexModelBuildingService();
+        const bot = await lexModelBuildingService.getBot({ name: botName, versionOrAlias: '$LATEST' }).promise();
+        const checksum=bot.checksum;
+        const updateBotParams = {
+            name: botName,
+            intents: intents,
+            locale:'en-US',
+            childDirected: false,
+            checksum:checksum,
+            abortStatement: {
+                messages: [
+                    {
+                        content: 'Sorry, I cannot assist with that.',
+                        contentType: 'PlainText',
+                    },
+                ],
+            },
+        };
+        const updateBotResponse = await lexModelBuildingService.putBot(updateBotParams).promise();
+        console.log('Intents added to the existing bot:', updateBotResponse);
+    } catch (error) {
+        console.error('Error adding intents to bot:', error);
+        throw error;
+    }
+};
+
+const createBot = async (botName, intents) => {
+    try {
+        const lexModelBuildingService = new AWS.LexModelBuildingService();
+        const createBotParams = {
+            name: botName,
+            childDirected: false,
+            abortStatement: {
+                messages: [
+                    {
+                        content: 'Sorry, I cannot assist with that.',
+                        contentType: 'PlainText',
+                    },
+                ],
+            },
+            clarificationPrompt: {
+                messages: [
+                    {
+                        content: 'Can you please repeat that',
+                        contentType: 'PlainText',
+                    },
+                ],
+                maxAttempts: 5,
+            },
+            locale: 'en-US',
+            intents: intents,
+            voiceId:'Ivy'
+        };
+        const createBotResponse = await lexModelBuildingService.putBot(createBotParams).promise();
+        console.log('Bot created successfully:', createBotResponse);
+    } catch (error) {
+        console.error('Error creating bot:', error);
+        throw error;
+    }
+};
+
+const createIntent = async (intentName, btnName) => {
+    try {
+        const lexModelBuildingService = new AWS.LexModelBuildingService();
+
+        // Check if the intent already exists
+        const getIntentParams = {
+            name: intentName,
+            version: '$LATEST'
+        };
+
+        let intentExists = false;
+
+        try {
+            const temp= await lexModelBuildingService.getIntent(getIntentParams).promise();
+            intentExists = true;
+            console.log(`Intent ${intentName} already exists.`);
+        } catch (error) {
+            if (error.code !== 'NotFoundException') {
+                console.error(`Error checking if intent ${intentName} exists:`, error);
+                throw error;
+            }
+        }
+
+        // If intent doesn't exist, create a new one
+        if (!intentExists) {
+            const createIntentParams = {
+                name: intentName,
+                sampleUtterances: [`Click ${btnName}`, `Press ${btnName}`],
+                fulfillmentActivity: {
+                    type: 'ReturnIntent',
+                },
+                // Add other intent configuration parameters as needed
+            };
+            const createIntentResponse = await lexModelBuildingService.putIntent(createIntentParams).promise();
+            console.log(`Intent created successfully for ${intentName}:`, createIntentResponse);
+            return createIntentResponse;
+        }
+    } catch (error) {
+        console.error(`Error creating intent for ${intentName}:`, error);
+        throw error;
+    }
+};
+
+
+
+
+  function audioclick() {
+    //document.getElementById('audio-control').onclick = function () {
+    AWS.config.credentials = new AWS.Credentials("<secret-1>", "<secret-2>", null);
+    AWS.config.region = 'us-east-1';
+    console.log("clicked");
+    config = {
+      silenceDetectionConfig: {
+        time: 3000,
+        amplitude: 1000
+      },
+      lexConfig: {
+        botName: "<bot-name>"
+      }
+      //silenceDetection:false
+    };
+
+    conversation = new LexAudio.conversation(config, function (state) {
+      message.textContent = state + '...';
+      console.log(state);
+      if (state === 'Listening') {
+        waveform.prepCanvas();
+        console.log("inside listening");
+      }
+      if (state === 'Sending') {
+        waveform.clearCanvas();
+      }
+    }, function (data) {
+
+      //Below is generic code to programatically scan page, then create intents and bot
+      // var str=String(data.intentName);
+      // str=str.slice(0,-6)
+      // document.getElementById(str).click();
+      
+      //Below is code to integrate intents manually
+      if (data.intentName == "ClickHomeButton") {
+        window.location.assign("/");
+      }
+      if (data.intentName == "ClickSaveButton") {
+        document.getElementById("SaveBtn").click();
+      }
+      if (data.intentName == "ReadUsers") {
+        document.getElementById("usersearch").click();
+        setTimeout(function () {
+          document.getElementById("searchBtn").click();
+        }, 1000);
+      }
+      if (data.intentName == "ClickSearchButton") {
+        var elem = document.getElementById("searchBtn");
+        if (elem === null) {
+          alert("Sorry, this operation can not be performed on this page.");
+        }
+        else
+          document.getElementById("searchBtn").click();
+      }
+      if (data.intentName == "GoToHome") {
+        document.getElementById("home").click();
+      }
+      if (data.intentName == "GoToSearchPage") {
+        console.log("entered going to user search page");
+        document.getElementById("usersearch").click();
+        setTimeout(function () {
+          document.getElementById("searchBtn").click();
+        }, 1000);
+
+        console.log("leaving going to user search page");
+      }
+      if (data.intentName == "FillForm") {
+
+        document.getElementById("usercreate").click();
+        if (document.getElementById("FirstName") != null)
+          document.getElementById("FirstName").value = data.slots.FirstName;
+        if (data.slots.LastName != null) {
+          document.getElementById("LastName").value = data.slots.LastName;
+          
+        }
+        if (data.slots.LastName != null){
+          if(data.slots.Gender==null){
+            document.getElementById("Gender").setAttribute('size', 3);
+          }
+          else{
+            document.getElementById("Gender").setAttribute('size', 1);
+          }
+        }
+        if (data.slots.Gender != null) {
+          document.getElementById("Gender").value = data.slots.Gender;
+          let dropdown = document.getElementById("Gender");
+          for (let i = 0; i < dropdown.children.length; i++) {
+            if (dropdown.children.item(i).textContent.trim().toLowerCase() === data.slots.Gender.toLowerCase()) {
+              document.getElementById("Gender").options.item(i).selected = 'selected';
+            }
+          }
+          
+        }
+        if (data.slots.AccessType != null) {
+          if(data.slots.AccessType=='Admin')
+            document.getElementById('type_admin').checked = true;
+          if(data.slots.AccessType=='User')
+            document.getElementById('type_user').checked = true;
+          
+          document.getElementById("PhoneNumber").focus();
+          document.getElementById("PhoneNumber").select();
+        }
+    }
+      }, function (error) {
+    message.textContent = error;
+    console.log("error came");
+    console.log(error);
+  }, function (timeDomain, bufferLength) {
+    waveform.visualizeAudioBuffer(timeDomain, bufferLength);
+  });
+  console.log("before");
+  conversation.advanceConversation();
+  };
+  document.addEventListener('DOMContentLoaded', function () {
+    // your code here
+    console.log("window onload");
+    setTimeout(function () {
+      //your code here
+      //document.getElementById('audio-control').click();
+    }, 3000);
+
+  }, false);
+  document.addEventListener('readystatechange', event => {
+
+    // When HTML/DOM elements are ready:
+    if (event.target.readyState === "interactive") {   //does same as:  ..addEventListener("DOMContentLoaded"..
+      //alert("hi 1");
+    }
+
+    // When window loaded ( external resources are loaded too- `css`,`src`, etc...) 
+    if (event.target.readyState === "complete") {
+      //document.getElementById('btntest').click()
+      setTimeout(function () {
+        // document.getElementById('startBtn').click();
+        //your code here
+
+        //document.getElementById('audio-control').click();
+      }, 1000);
+    }
+  });
+</script>
+
+</html>
